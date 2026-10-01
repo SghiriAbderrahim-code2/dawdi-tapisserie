@@ -36,9 +36,10 @@ alter table public.fabrics
   add column if not exists is_print boolean not null default false;
 
 -- بعد إضافة أقمشتك: اربطها بكل الأنواع، ثم احذف ما لا يناسب
--- insert into public.fabric_furniture_types
---   select f.id, t.id from public.fabrics f cross join public.furniture_types t
---   on conflict do nothing;
+insert into public.fabric_furniture_types (fabric_id, furniture_type_id)
+  select f.id, t.id from public.fabrics f cross join public.furniture_types t
+  where f.is_available
+  on conflict do nothing;
 
 -- ---------- 3. نظام الخيارات ----------
 create table public.option_groups (

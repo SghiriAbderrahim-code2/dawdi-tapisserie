@@ -67,7 +67,6 @@ export default async function AdminFabricsPage({
       {showForm && (
         <form
           action={saveFabricAction}
-          encType="multipart/form-data"
           className="mt-6 grid gap-4 rounded-2xl border border-zinc-200 bg-white p-5 sm:grid-cols-2"
         >
           <input type="hidden" name="id" value={editing?.id ?? ""} />

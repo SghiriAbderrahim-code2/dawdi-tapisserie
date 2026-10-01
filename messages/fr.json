@@ -105,7 +105,11 @@
     "emptyItemsShort": "Aucune pièce ajoutée pour l'instant.",
     "remove": "Supprimer",
     "preview": "Aperçu du design",
-    "step": "Étape"
+    "step": "Étape",
+    "loadingFabrics": "Chargement des tissus…",
+    "noFabrics": "Aucun tissu disponible pour ce type pour le moment.",
+    "fabricsError": "Impossible de charger les tissus, réessayez.",
+    "retry": "Réessayer"
   },
   "Order": {
     "title": "Récapitulatif de commande",

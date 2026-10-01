@@ -1,9 +1,8 @@
 import { getTranslations, setRequestLocale } from "next-intl/server";
 import { CustomizerClient } from "@/components/customizer/customizer-client";
-import type { CatalogByType } from "@/lib/queries";
+import type { OptionGroupWithValues } from "@/lib/queries";
 import {
   getCategories,
-  getFabricsForType,
   getFurnitureTypes,
   getOptionGroupsForType,
   getWoods,
@@ -33,9 +32,11 @@ export default async function CustomizePage({
     getWoods(),
   ]);
 
-  const perType: CatalogByType = {};
+  const perType: Record<string, { options: OptionGroupWithValues[] }> = {};
   for (const furnitureType of types) {
-    perType[furnitureType.slug] = await loadPerType(furnitureType.id);
+    perType[furnitureType.slug] = {
+      options: await getOptionGroupsForType(furnitureType.id),
+    };
   }
 
   const t = await getTranslations("Customizer");
@@ -58,12 +59,4 @@ export default async function CustomizePage({
       </div>
     </div>
   );
-}
-
-async function loadPerType(furnitureTypeId: number) {
-  const [fabrics, options] = await Promise.all([
-    getFabricsForType(furnitureTypeId),
-    getOptionGroupsForType(furnitureTypeId),
-  ]);
-  return { fabrics, options };
 }

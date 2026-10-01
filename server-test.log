@@ -1,0 +1,8 @@
+npm notice run furniture-store@0.1.0 npx
+npm notice run next start -p 3001
+▲ Next.js 16.3.8
+- Local:         http://localhost:3001
+- Network:       http://172.30.112.1:3001
+✓ Ready in 148ms
+✓ Running next.config.ts took 75ms
+[api/fabrics] type=single-bed furniture_type_id=2 → 2 fabrics

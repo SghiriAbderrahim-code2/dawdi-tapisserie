@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import type { Category, Fabric, FurnitureType, WoodFinish } from "@/lib/database.types";
@@ -17,10 +17,7 @@ import {
 import type { OptionGroupWithValues } from "@/lib/queries";
 import { FurnitureArt, furnitureFill } from "./art";
 
-type PerType = Record<
-  string,
-  { fabrics: Fabric[]; options: OptionGroupWithValues[] }
->;
+type PerType = Record<string, { options: OptionGroupWithValues[] }>;
 
 type Props = {
   categories: Category[];
@@ -68,10 +65,107 @@ export function CustomizerClient({
     [types, typeSlug],
   );
 
-  const data: { fabrics: Fabric[]; options: OptionGroupWithValues[] } =
-    (type ? perType[type.slug] : null) ?? { fabrics: [], options: [] };
-  const fabrics = data.fabrics;
-  const optionGroups = data.options;
+  const optionGroups =
+    (type ? perType[type.slug]?.options : null) ?? [];
+
+  const [fabricsState, setFabricsState] = useState<{
+    key: string;
+    status: "ready" | "error";
+    fabrics: Fabric[];
+  } | null>(null);
+  const [retryTick, setRetryTick] = useState(0);
+  const [knownFabrics, setKnownFabrics] = useState<Record<number, Fabric>>({});
+  const loadedSlugs = useRef(new Set<string>());
+  const fetchSeq = useRef(0);
+
+  const activeSlug = type?.slug ?? null;
+  const fabricsKey = activeSlug ? `${activeSlug}#${retryTick}` : null;
+  const fabricsLoading =
+    activeSlug !== null &&
+    (!fabricsState || fabricsState.key !== fabricsKey);
+  const fabricsError =
+    activeSlug !== null &&
+    fabricsState?.key === fabricsKey &&
+    fabricsState.status === "error";
+  const fabrics =
+    fabricsState?.key === fabricsKey && fabricsState.status === "ready"
+      ? fabricsState.fabrics
+      : [];
+
+  useEffect(() => {
+    if (!activeSlug) return;
+    const seq = ++fetchSeq.current;
+    const key = `${activeSlug}#${retryTick}`;
+    fetch(`/api/fabrics?type=${encodeURIComponent(activeSlug)}`)
+      .then((res) => {
+        if (!res.ok) throw new Error(String(res.status));
+        return res.json() as Promise<{
+          furnitureTypeId: number;
+          fabrics: Fabric[];
+        }>;
+      })
+      .then((data) => {
+        if (seq !== fetchSeq.current) return; // تغيّر النوع أثناء الطلب
+        loadedSlugs.current.add(activeSlug);
+        const list = data.fabrics;
+        console.log(
+          `[customize] type=${activeSlug} furniture_type_id=${data.furnitureTypeId} → ${list.length} fabrics`,
+        );
+        setFabricsState({ key, status: "ready", fabrics: list });
+        setKnownFabrics((prev) => {
+          const next = { ...prev };
+          for (const item of list) next[item.id] = item;
+          return next;
+        });
+        const current = getCartSnapshot().draft;
+        if (
+          current &&
+          current.typeSlug === activeSlug &&
+          current.fabricId != null &&
+          !list.some((item) => item.id === current.fabricId)
+        ) {
+          setDraft({
+            typeSlug: current.typeSlug,
+            fabricId: null,
+            woodId: current.woodId,
+            options: current.options,
+            lengthCm: current.lengthCm,
+            widthCm: current.widthCm,
+            heightCm: current.heightCm,
+            quantity: current.quantity,
+          });
+        }
+      })
+      .catch((err) => {
+        if (seq !== fetchSeq.current) return;
+        console.error(`[customize] fabrics fetch failed: ${activeSlug}`, err);
+        setFabricsState({ key, status: "error", fabrics: [] });
+      });
+  }, [activeSlug, retryTick]);
+
+  useEffect(() => {
+    const missing = [
+      ...new Set(cart.items.map((item) => item.typeSlug)),
+    ].filter((slug) => slug !== activeSlug && !loadedSlugs.current.has(slug));
+    for (const slug of missing) {
+      loadedSlugs.current.add(slug);
+      fetch(`/api/fabrics?type=${encodeURIComponent(slug)}`)
+        .then((res) => {
+          if (!res.ok) throw new Error(String(res.status));
+          return res.json() as Promise<{ fabrics: Fabric[] }>;
+        })
+        .then((data) => {
+          setKnownFabrics((prev) => {
+            const next = { ...prev };
+            for (const item of data.fabrics) next[item.id] = item;
+            return next;
+          });
+        })
+        .catch((err) =>
+          console.error(`[customize] cart fabrics fetch failed: ${slug}`, err),
+        );
+    }
+  }, [cart.items, activeSlug]);
 
   const fabricId = draftMatches && draft ? draft.fabricId : null;
   const woodId = draftMatches && draft ? draft.woodId : null;
@@ -100,15 +194,8 @@ export function CustomizerClient({
   const wood = woods.find((item) => item.id === woodId) ?? null;
 
   const allFabrics = useMemo(
-    () =>
-      Array.from(
-        new Map(
-          Object.values(perType).flatMap((entry) =>
-            entry.fabrics.map((item) => [item.id, item] as const),
-          ),
-        ).values(),
-      ),
-    [perType],
+    () => Object.values(knownFabrics),
+    [knownFabrics],
   );
 
   const isBed =
@@ -137,14 +224,8 @@ export function CustomizerClient({
     setTypeOverride(nextSlug);
     setError(null);
 
-    const nextData = perType[nextSlug] ?? { fabrics: [], options: [] };
-    const currentFabric = fabrics.find((item) => item.id === fabricId);
-    const keepFabric =
-      currentFabric && nextData.fabrics.some((f) => f.id === currentFabric.id)
-        ? currentFabric.id
-        : null;
-
-    const validKeys = new Set(nextData.options.map((g) => g.key));
+    const nextOptions = perType[nextSlug]?.options ?? [];
+    const validKeys = new Set(nextOptions.map((g) => g.key));
     const keptOptions = Object.fromEntries(
       Object.entries(choices).filter(([key]) => validKeys.has(key)),
     );
@@ -152,7 +233,7 @@ export function CustomizerClient({
     const nextLength = midpoint(nextType.min_length, nextType.max_length);
     setDraft({
       typeSlug: nextSlug,
-      fabricId: keepFabric,
+      fabricId,
       woodId,
       options: keptOptions,
       lengthCm: nextLength,
@@ -166,6 +247,8 @@ export function CustomizerClient({
 
   function validate(): string | null {
     if (!type) return t("chooseType");
+    if (fabricsLoading) return t("chooseFabric");
+    if (fabricsError) return t("fabricsError");
     if (fabrics.length > 0 && !fabricId) return t("chooseFabric");
 
     for (const group of optionGroups) {
@@ -228,10 +311,8 @@ export function CustomizerClient({
     return <p className="py-20 text-center text-zinc-600">{t("chooseType")}</p>;
   }
 
-  const previewFill = furnitureFill(
-    fabric?.texture_url || null,
-    fabric?.dominant_color,
-  );
+  const textureUrl = fabric && !fabric.is_print ? fabric.texture_url || null : null;
+  const previewFill = furnitureFill(textureUrl, fabric?.dominant_color);
   const effectiveWidth = type?.is_round ? lengthCm : widthCm;
 
   return (
@@ -248,9 +329,27 @@ export function CustomizerClient({
                 title={type.name_ar}
                 woodColor={wood?.color_hex ?? "#5C4033"}
                 fabricFill={previewFill}
-                textureUrl={fabric?.texture_url || null}
+                textureUrl={textureUrl}
                 className="h-auto w-full"
               />
+            )}
+            {fabric?.is_print && (
+              <div className="flex items-center gap-2 border-t border-zinc-100 px-3 py-2">
+                <span
+                  aria-hidden
+                  className="size-7 shrink-0 rounded-full border border-black/10"
+                  style={{
+                    backgroundColor: fabric.dominant_color ?? "#EFE7DA",
+                    backgroundImage: fabric.thumbnail_url
+                      ? `url(${fabric.thumbnail_url})`
+                      : undefined,
+                    backgroundSize: "cover",
+                  }}
+                />
+                <span className="truncate text-xs text-zinc-600">
+                  {fabric.name}
+                </span>
+              </div>
             )}
           </div>
         </div>
@@ -279,10 +378,16 @@ export function CustomizerClient({
                           "#5C4033"
                         }
                         fabricFill={furnitureFill(
-                          itemFabric?.texture_url || null,
+                          itemFabric && !itemFabric.is_print
+                            ? itemFabric.texture_url || null
+                            : null,
                           itemFabric?.dominant_color,
                         )}
-                        textureUrl={itemFabric?.texture_url || null}
+                        textureUrl={
+                          itemFabric && !itemFabric.is_print
+                            ? itemFabric.texture_url || null
+                            : null
+                        }
                         className="h-auto w-full"
                       />
                     </span>
@@ -349,43 +454,60 @@ export function CustomizerClient({
           </div>
         </section>
 
-        {fabrics.length > 0 && (
-          <section>
-            <h2 className="font-semibold text-zinc-900">{t("fabric")}</h2>
-            <div className="mt-3 flex flex-wrap gap-3">
-              {fabrics.map((item) => (
+        <section>
+          <h2 className="font-semibold text-zinc-900">{t("fabric")}</h2>
+          <div className="mt-3">
+            {fabricsLoading ? (
+              <p className="text-sm text-zinc-500">{t("loadingFabrics")}</p>
+            ) : fabricsError ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="text-sm text-red-600">{t("fabricsError")}</p>
                 <button
-                  key={item.id}
                   type="button"
-                  onClick={() => {
-                    setError(null);
-                    update({ fabricId: item.id });
-                  }}
-                  aria-pressed={fabricId === item.id}
-                  title={item.name}
-                  className={`flex items-center gap-2 rounded-full border py-2 pe-4 ps-2 text-sm transition-colors ${
-                    fabricId === item.id
-                      ? "border-amber-700 bg-amber-50 text-amber-900"
-                      : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300"
-                  }`}
+                  onClick={() => setRetryTick((tick) => tick + 1)}
+                  className="min-h-9 rounded-lg border border-zinc-300 px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-100"
                 >
-                  <span
-                    aria-hidden
-                    className="size-7 rounded-full border border-black/10"
-                    style={{
-                      backgroundColor: item.dominant_color ?? "#C9B99A",
-                      backgroundImage: item.thumbnail_url
-                        ? `url(${item.thumbnail_url})`
-                        : undefined,
-                      backgroundSize: "cover",
-                    }}
-                  />
-                  {item.name}
+                  {t("retry")}
                 </button>
-              ))}
-            </div>
-          </section>
-        )}
+              </div>
+            ) : fabrics.length === 0 ? (
+              <p className="text-sm text-zinc-600">{t("noFabrics")}</p>
+            ) : (
+              <div className="flex flex-wrap gap-3">
+                {fabrics.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setError(null);
+                      update({ fabricId: item.id });
+                    }}
+                    aria-pressed={fabricId === item.id}
+                    title={item.name}
+                    className={`flex items-center gap-2 rounded-full border py-2 pe-4 ps-2 text-sm transition-colors ${
+                      fabricId === item.id
+                        ? "border-amber-700 bg-amber-50 text-amber-900"
+                        : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300"
+                    }`}
+                  >
+                    <span
+                      aria-hidden
+                      className="size-7 rounded-full border border-black/10"
+                      style={{
+                        backgroundColor: item.dominant_color ?? "#C9B99A",
+                        backgroundImage: item.thumbnail_url
+                          ? `url(${item.thumbnail_url})`
+                          : undefined,
+                        backgroundSize: "cover",
+                      }}
+                    />
+                    {item.name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
 
         {woods.length > 0 && (
           <section>
